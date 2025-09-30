@@ -14,6 +14,16 @@ try:
 
     HAS_STRUCTLOG = True
     logger = structlog.get_logger()
+    
+    def log_info(message: str, **kwargs) -> None:
+        logger.info(message, **kwargs)
+    
+    def log_warning(message: str, **kwargs) -> None:
+        logger.warning(message, **kwargs)
+    
+    def log_error(message: str, **kwargs) -> None:
+        logger.error(message, **kwargs)
+        
 except ImportError:
     import logging
 
@@ -22,6 +32,21 @@ except ImportError:
         level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
     )
     logger = logging.getLogger(__name__)
+    
+    def log_info(message: str, **kwargs) -> None:
+        if kwargs:
+            message = f"{message} - " + ", ".join(f"{k}={v}" for k, v in kwargs.items())
+        logger.info(message)
+    
+    def log_warning(message: str, **kwargs) -> None:
+        if kwargs:
+            message = f"{message} - " + ", ".join(f"{k}={v}" for k, v in kwargs.items())
+        logger.warning(message)
+    
+    def log_error(message: str, **kwargs) -> None:
+        if kwargs:
+            message = f"{message} - " + ", ".join(f"{k}={v}" for k, v in kwargs.items())
+        logger.error(message)
 
 from ssh_hardener.config import HardenerConfig
 from ssh_hardener.exceptions import (
@@ -131,14 +156,14 @@ class SSHHardener:
         # Display results
         if warnings and self.verbose:
             for warning in warnings:
-                logger.warning("preflight_warning", warning=warning)
+                log_warning("preflight_warning", warning=warning)
 
         if issues:
             for issue in issues:
-                logger.error("preflight_issue", issue=issue)
+                log_error("preflight_issue", issue=issue)
             return False
 
-        logger.info("Preflight checks passed", warnings=len(warnings))
+        log_info("Preflight checks passed", warnings=len(warnings))
         return True
 
     def run(self) -> None:
@@ -147,7 +172,7 @@ class SSHHardener:
         Raises:
             HardenerError: If hardening process fails
         """
-        logger.info(
+        log_info(
             "Starting SSH hardening",
             port=self.config.ssh.port,
             users=self.config.ssh.admin_users,
@@ -177,19 +202,19 @@ class SSHHardener:
             # Test and commit
             if not self.dry_run:
                 if not self._test_and_commit():
-                    logger.warning("Connection test failed, rolling back")
+                    log_warning("Connection test failed, rolling back")
                     self.rollback()
                     return
 
-            logger.info("SSH hardening completed successfully")
+            log_info("SSH hardening completed successfully")
 
         except KeyboardInterrupt:
-            logger.warning("Interrupted by user, rolling back")
+            log_warning("Interrupted by user, rolling back")
             self.rollback()
             raise
 
         except Exception as e:
-            logger.error("Hardening failed", error=str(e))
+            log_error("Hardening failed", error=str(e))
             self.rollback()
             raise HardenerError(f"Hardening failed: {e}") from e
 
@@ -199,11 +224,11 @@ class SSHHardener:
         Raises:
             RollbackError: If rollback fails
         """
-        logger.info("Rolling back changes")
+        log_info("Rolling back changes")
 
         try:
             restored = self.file_manager.rollback_all()
-            logger.info("Files restored", count=len(restored))
+            log_info("Files restored", count=len(restored))
 
             # Restart SSH with original config
             self._restart_ssh_service()
@@ -213,11 +238,11 @@ class SSHHardener:
 
     def _setup_admin_users(self) -> None:
         """Create and configure admin users."""
-        logger.info("Setting up admin users")
+        log_info("Setting up admin users")
 
         for username in self.config.ssh.admin_users:
             if self.validator.validate_user_exists(username):
-                logger.info("User exists", user=username)
+                log_info("User exists", user=username)
                 continue
 
             # Create user
@@ -225,9 +250,9 @@ class SSHHardener:
             result = self.executor.execute(cmd, needs_root=True, check=False)
 
             if result.success:
-                logger.info("User created", user=username)
+                log_info("User created", user=username)
             else:
-                logger.error("User creation failed", user=username, error=result.stderr)
+                log_error("User creation failed", user=username, error=result.stderr)
                 continue
 
             # Add to sudo/wheel group
@@ -253,7 +278,7 @@ class SSHHardener:
 
     def _update_ssh_config(self) -> None:
         """Update SSH configuration with security settings."""
-        logger.info("Updating SSH configuration")
+        log_info("Updating SSH configuration")
 
         ssh_config = Path("/etc/ssh/sshd_config")
         ssh_config_d = Path("/etc/ssh/sshd_config.d")
@@ -265,7 +290,7 @@ class SSHHardener:
         config_file = ssh_config
         if ssh_config_d.exists():
             config_file = ssh_config_d / "99-hardening.conf"
-            logger.info("Using drop-in config", file=str(config_file))
+            log_info("Using drop-in config", file=str(config_file))
 
         if config_file != ssh_config and config_file.exists():
             self.file_manager.backup_file(config_file)
@@ -332,14 +357,14 @@ class SSHHardener:
                 )
                 if not result.success:
                     raise ValidationError(f"Invalid SSH config: {result.stderr}")
-                logger.info("SSH configuration validated")
+                log_info("SSH configuration validated")
                 return
 
-        logger.warning("Cannot validate SSH config - sshd not found")
+        log_warning("Cannot validate SSH config - sshd not found")
 
     def _setup_fail2ban(self) -> None:
         """Configure fail2ban for SSH protection."""
-        logger.info("Setting up fail2ban")
+        log_info("Setting up fail2ban")
 
         # Install if needed
         if not self.executor.check_command_available("fail2ban-client"):
@@ -369,11 +394,11 @@ maxretry = {self.config.security.fail2ban_maxretry}
         self._control_service("fail2ban", "restart")
         self._control_service("fail2ban", "enable")
 
-        logger.info("Fail2ban configured")
+        log_info("Fail2ban configured")
 
     def _setup_firewall(self) -> None:
         """Configure firewall rules."""
-        logger.info("Setting up firewall")
+        log_info("Setting up firewall")
 
         current_port = self._get_current_ssh_port()
 
@@ -461,7 +486,7 @@ maxretry = {self.config.security.fail2ban_maxretry}
         """
         cmd = self.system.get_package_install_command(package)
         if not cmd:
-            logger.error("No package manager available")
+            log_error("No package manager available")
             return False
 
         result = self.executor.execute(cmd, needs_root=True, check=False, timeout=300)
@@ -489,7 +514,7 @@ maxretry = {self.config.security.fail2ban_maxretry}
         """Restart SSH service."""
         service_name = self._get_ssh_service_name()
         if not service_name:
-            logger.warning("SSH service not found")
+            log_warning("SSH service not found")
             return
 
         self._control_service(service_name, "restart")
@@ -604,7 +629,7 @@ DO NOT close this terminal until verified!
                 return False
 
             elif response == "skip":
-                logger.warning("Connection test skipped - RISKY!")
+                log_warning("Connection test skipped - RISKY!")
                 return True
 
     def _cleanup_old_port(self) -> None:
